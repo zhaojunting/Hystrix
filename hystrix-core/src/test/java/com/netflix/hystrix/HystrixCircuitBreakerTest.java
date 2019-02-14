@@ -188,8 +188,14 @@ public class HystrixCircuitBreakerTest {
             HystrixCommand<Boolean> cmd8 = new FailureCommand(key, 1);
             cmd8.execute();
 
+            System.out.println("ReqLog : " + HystrixRequestLog.getCurrentRequest().getExecutedCommandsAsString());
+            System.out.println("Current CircuitBreaker Status : " + cmd1.getMetrics().getHealthCounts());
+
             // this should trip the circuit as the error percentage is above the threshold
             Thread.sleep(100);
+
+            System.out.println("ReqLog : " + HystrixRequestLog.getCurrentRequest().getExecutedCommandsAsString());
+            System.out.println("Current CircuitBreaker Status : " + cmd1.getMetrics().getHealthCounts());
             assertFalse(cb.allowRequest());
             assertTrue(cb.isOpen());
         } catch (Exception e) {
