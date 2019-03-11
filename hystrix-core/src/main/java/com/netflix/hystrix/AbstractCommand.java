@@ -218,7 +218,9 @@ import java.util.concurrent.atomic.AtomicReference;
      *
      * It can then be overridden by a property if defined so it can be changed at runtime.
      */
+    /** 线程池隔离粒度 */
     private static HystrixThreadPoolKey initThreadPoolKey(HystrixThreadPoolKey threadPoolKey, HystrixCommandGroupKey groupKey, String threadPoolKeyOverride) {
+        /** 线程池隔离KEY默认为Null */
         if (threadPoolKeyOverride == null) {
             // we don't have a property overriding the value so use either HystrixThreadPoolKey or HystrixCommandGroup
             if (threadPoolKey == null) {
@@ -462,6 +464,7 @@ import java.util.concurrent.atomic.AtomicReference;
                     throw new HystrixRuntimeException(FailureType.BAD_REQUEST_EXCEPTION, _cmd.getClass(), getLogMessagePrefix() + " command executed multiple times - this is not permitted.", ex, null);
                 }
 
+                /** 1.记录命令开始时间戳 */
                 commandStartTimestamp = System.currentTimeMillis();
 
                 if (properties.requestLogEnabled().get()) {
@@ -474,16 +477,20 @@ import java.util.concurrent.atomic.AtomicReference;
                 final boolean requestCacheEnabled = isRequestCachingEnabled();
                 final String cacheKey = getCacheKey();
 
+                /** 2.缓存开关开启，则优先尝试缓存 */
                 /* try from cache first */
                 if (requestCacheEnabled) {
                     HystrixCommandResponseFromCache<R> fromCache = (HystrixCommandResponseFromCache<R>) requestCache.get(cacheKey);
                     if (fromCache != null) {
                         isResponseFromCache = true;
+                        /** 2.1 缓存命中，直接返回 */
                         return handleRequestCacheHitAndEmitValues(fromCache, _cmd);
                     }
                 }
 
+                /** 2.2 缓存未命中，构建执行命令的Observable */
                 Observable<R> hystrixObservable =
+                        /**Defer： 使用applyHystrixSemantics工厂方法在有观察者订阅时为每个观察者创建一个新的Observable */
                         Observable.defer(applyHystrixSemantics)
                                 .map(wrapWithAllOnNextHooks);
 
@@ -492,12 +499,23 @@ import java.util.concurrent.atomic.AtomicReference;
                 // put in cache
                 if (requestCacheEnabled && cacheKey != null) {
                     // wrap it for caching
+                    /** 使用HystrixCachedObservable对hystrixObservable进行封装代理，内部使用ReplaySubject对hystrixObservable发射事件进行重放 */
+                    /** 内部使用ReplaySubject.create()后订阅hystrixObservable
+                     *  TODO 会触发多次事件发射吗？
+                     *      会，上面（2）中其实已经优先尝试缓存了，订阅即会触发OnSubscribe发射事件。
+                     *
+                     *  细化到线程池隔离，信号量隔离 区别？
+                     * */
                     HystrixCachedObservable<R> toCache = HystrixCachedObservable.from(hystrixObservable, _cmd);
+
+                    /** 如果存在并发线程提前封装缓存，则返回实体对象【内部关联写入缓存的命令对象】，如果没有缓存值则返回为Null */
                     HystrixCommandResponseFromCache<R> fromCache = (HystrixCommandResponseFromCache<R>) requestCache.putIfAbsent(cacheKey, toCache);
                     if (fromCache != null) {
                         // another thread beat us so we'll use the cached value instead
                         toCache.unsubscribe();
                         isResponseFromCache = true;
+
+                        /** 存在另一个线程对hystrixObservable原命令进行缓存代理，那么直接走缓存即可  */
                         return handleRequestCacheHitAndEmitValues(fromCache, _cmd);
                     } else {
                         // we just created an ObservableCommand so we cast and return it
@@ -521,9 +539,13 @@ import java.util.concurrent.atomic.AtomicReference;
         executionHook.onStart(_cmd);
 
         /* determine if we're allowed to execute */
+        /** 断路器状态-闭合--> 执行 */
         if (circuitBreaker.attemptExecution()) {
+            /** 1.根据隔离策略获取具体信号量实现 */
             final TryableSemaphore executionSemaphore = getExecutionSemaphore();
             final AtomicBoolean semaphoreHasBeenReleased = new AtomicBoolean(false);
+
+            /** 2.信号量释放回调 */
             final Action0 singleSemaphoreRelease = new Action0() {
                 @Override
                 public void call() {
@@ -532,17 +554,21 @@ import java.util.concurrent.atomic.AtomicReference;
                     }
                 }
             };
-
+            /** 3.异常回调 */
             final Action1<Throwable> markExceptionThrown = new Action1<Throwable>() {
                 @Override
                 public void call(Throwable t) {
+                    //TODO : 考虑自动超时后回调
                     eventNotifier.markEvent(HystrixEventType.EXCEPTION_THROWN, commandKey);
                 }
             };
 
+            /** 4.信号量申请 */
             if (executionSemaphore.tryAcquire()) {
                 try {
+                    /** 4.1 申请成功（线程池隔离百分百成功） */
                     /* used to track userThreadExecutionTime */
+                    /** 记录开始执行时间 */
                     executionResult = executionResult.setInvocationStartTime(System.currentTimeMillis());
                     return executeCommandAndObserve(_cmd)
                             .doOnError(markExceptionThrown)
@@ -552,9 +578,11 @@ import java.util.concurrent.atomic.AtomicReference;
                     return Observable.error(e);
                 }
             } else {
+                /** 4.2 申请失败-走信号量拒绝逻辑 */
                 return handleSemaphoreRejectionViaFallback();
             }
         } else {
+            /** 断路器状态-开启--> 降级 */
             return handleShortCircuitViaFallback();
         }
     }
@@ -633,6 +661,7 @@ import java.util.concurrent.atomic.AtomicReference;
         };
 
         Observable<R> execution;
+        /** 判断是否执行自动超时机制 */
         if (properties.executionTimeoutEnabled().get()) {
             execution = executeCommandWithSpecifiedIsolation(_cmd)
                     .lift(new HystrixObservableTimeoutOperator<R>(_cmd));
@@ -709,9 +738,11 @@ import java.util.concurrent.atomic.AtomicReference;
                     }
                     //if it was terminal, then other cleanup handled it
                 }
+            /** 在线程池中执行命令，线程池隔离 */
             }).subscribeOn(threadPool.getScheduler(new Func0<Boolean>() {
                 @Override
                 public Boolean call() {
+                    /** 如果配置了超时后线程中断（默认true），并且当前命令执行超时，则应该对线程进行中断处理 */
                     return properties.executionIsolationThreadInterruptOnTimeout().get() && _cmd.isCommandTimedOut.get() == TimedOutStatus.TIMED_OUT;
                 }
             }));
@@ -1165,10 +1196,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
                 @Override
                 public int getIntervalTimeInMilliseconds() {
+                    /**  超时时间配置  */
                     return originalCommand.properties.executionTimeoutInMilliseconds().get();
                 }
             };
 
+            /** 使用HystrixTimer线程完成自动超时机制 */
             final Reference<TimerListener> tl = HystrixTimer.getInstance().addTimerListener(listener);
 
             // set externally so execute/queue can see this
@@ -1254,6 +1287,7 @@ import java.util.concurrent.atomic.AtomicReference;
      * @return TryableSemaphore
      */
     protected TryableSemaphore getExecutionSemaphore() {
+        /** 若配置为信号量隔离，则返回TryableSemaphoreActual实现，内部维护AtomicInteger作为计数器，tryAcquire +，release - */
         if (properties.executionIsolationStrategy().get() == ExecutionIsolationStrategy.SEMAPHORE) {
             if (executionSemaphoreOverride == null) {
                 TryableSemaphore _s = executionSemaphorePerCircuit.get(commandKey.name());
@@ -1270,6 +1304,7 @@ import java.util.concurrent.atomic.AtomicReference;
             }
         } else {
             // return NoOp implementation since we're not using SEMAPHORE isolation
+            /** 若配置非信号量隔离，则返回TryableSemaphoreNoOp， tryAcquire return ture, release 啥也不干 */
             return TryableSemaphoreNoOp.DEFAULT;
         }
     }

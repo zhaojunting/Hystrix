@@ -91,9 +91,11 @@ public abstract class HystrixConcurrencyStrategy {
         }
     }
 
+    /** 构建Java 线程池方法 */
     public ThreadPoolExecutor getThreadPool(final HystrixThreadPoolKey threadPoolKey, HystrixThreadPoolProperties threadPoolProperties) {
         final ThreadFactory threadFactory = getThreadFactory(threadPoolKey);
 
+        /** Hystrix线程池 默认maxPoolSize == coreSize; 也就是说什么呢：队列BlockingQueue满了，那么线程池就饱和了。 */
         final boolean allowMaximumSizeToDivergeFromCoreSize = threadPoolProperties.getAllowMaximumSizeToDivergeFromCoreSize().get();
         final int dynamicCoreSize = threadPoolProperties.coreSize().get();
         final int keepAliveTime = threadPoolProperties.keepAliveTimeMinutes().get();
@@ -115,6 +117,7 @@ public abstract class HystrixConcurrencyStrategy {
         }
     }
 
+    /** 线程工厂 */
     private static ThreadFactory getThreadFactory(final HystrixThreadPoolKey threadPoolKey) {
         if (!PlatformSpecific.isAppEngineStandardEnvironment()) {
             return new ThreadFactory() {
@@ -123,6 +126,8 @@ public abstract class HystrixConcurrencyStrategy {
                 @Override
                 public Thread newThread(Runnable r) {
                     Thread thread = new Thread(r, "hystrix-" + threadPoolKey.name() + "-" + threadNumber.incrementAndGet());
+
+                    /** 线程池中的线程为守护线程 */
                     thread.setDaemon(true);
                     return thread;
                 }

@@ -45,6 +45,7 @@ public class HystrixCommandResponseFromCache<R> extends HystrixCachedObservable<
     }
 
     private void commandCompleted(final AbstractCommand<R> commandToCopyStateInto) {
+        /** 将原命令对象中的执行结果同步到当前命令中 */
         commandToCopyStateInto.executionResult = originalCommand.executionResult;
     }
 

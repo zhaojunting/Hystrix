@@ -61,6 +61,9 @@ public class CommandUsingRequestCache extends HystrixCommand<Boolean> {
             }
         }
 
+        /**
+         * Hystrix命令缓存命中测试
+         */
         @Test
         public void testWithCacheHits() {
             HystrixRequestContext context = HystrixRequestContext.initializeContext();

@@ -207,6 +207,7 @@ public interface HystrixThreadPool {
         }
 
         // allow us to change things via fast-properties by setting it each time
+        /** 支持动态配置 */
         private void touchConfig() {
             final int dynamicCoreSize = properties.coreSize().get();
             final int configuredMaximumSize = properties.maximumSize().get();

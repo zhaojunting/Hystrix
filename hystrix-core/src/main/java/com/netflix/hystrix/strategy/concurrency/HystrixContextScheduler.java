@@ -100,6 +100,7 @@ public class HystrixContextScheduler extends Scheduler {
         public Subscription schedule(Action0 action) {
             if (threadPool != null) {
                 if (!threadPool.isQueueSpaceAvailable()) {
+                    /** 线程池拒绝 */
                     throw new RejectedExecutionException("Rejected command because thread-pool queueSize is at rejection threshold.");
                 }
             }
